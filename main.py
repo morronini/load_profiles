@@ -37,6 +37,8 @@ def get_load_profile(station, eia_occupancy_type, vint, area, folders, repr_weat
     scaled_profile = pd.DataFrame()
     scaled_profile["Electricity kW"] = ref_profile["Electricity:Facility [kW](Hourly)"]*profile_scaling_factor
     scaled_profile["Natural Gas kW"] = ref_profile["Gas:Facility [kW](Hourly)"]*profile_scaling_factor
+    scaled_profile["Unprocessed Date"] = scaled_profile.index.to_list()
+    scaled_profile[["Date", "Time"]] = scaled_profile["Unprocessed Date"].str.split("  ", expand=True)
     return scaled_profile
 
 
@@ -145,9 +147,10 @@ def visualize_profile(df, vis_bool, folders):
         ))
     with open(folders["base"] + "profile.html", "w") as f:
         f.write(fig.to_html(full_html=False, include_plotlyjs='cdn'))
-    if vis_bool:
-        filename = 'file:///' + os.getcwd() + '/' + folders["base"] + 'profile.html'
-        webbrowser.open_new_tab(filename)
+    #if vis_bool:
+    #    filename = 'file:///' + os.getcwd() + '/' + folders["base"] + 'profile.html'
+    #    webbrowser.open_new_tab(filename)
+    return "Successful"
 
 
 if __name__ == "__main__":
@@ -162,5 +165,5 @@ if __name__ == "__main__":
     weather_station, repr_weather_station = get_weather_station_from_zip(args.zip)
     vintage = get_vintage_from_year_built(args.year)
     profile_df = get_load_profile(weather_station, eia_type, vintage, args.sqft, folders, repr_weather_station)
-    profile_df.to_excel(folders["base"] + "load_profile_out.xlsx")
-    visualize_profile(profile_df, args.vis, folders)
+    profile_df.drop(columns = ["Unprocessed Date", "Date", "Time"]).to_excel(folders["base"] + "load_profile_out.xlsx")
+    print(visualize_profile(profile_df, args.vis, folders))
