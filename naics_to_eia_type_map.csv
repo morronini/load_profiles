@@ -1,0 +1,17 @@
+﻿NAICS,EIA,Post-process with SQFT
+42,Warehouse,FALSE
+44,Stand-alone Retail,FALSE
+45,Stand-alone Retail,FALSE
+48,Warehouse,FALSE
+49,Warehouse,FALSE
+51,Office,TRUE
+52,Office,TRUE
+53,Office,TRUE
+54,Office,TRUE
+55,Office,TRUE
+56,Office,TRUE
+61,Education,TRUE
+62,Health Care,TRUE
+72,Restaurant+Accomodation,TRUE
+81,Office,TRUE
+92,Office,TRUE
