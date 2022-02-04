@@ -5,6 +5,36 @@ import plotly.graph_objects as go
 import webbrowser
 
 
+
+
+
+def make_process_dominated_load_profile(naics_code, floor_area, heat_cool_profile, folders):
+    # https://info.ornl.gov/sites/publications/files/pub45942.pdf for the daily profile
+    mecs_db = pd.read_csv(folders["data"]+"mecs_lookup.csv", index_col=0)
+    base_profile = pd.read_csv(folders["data"]+"base_manu_profile.csv")
+    wkdy_scaler = [0.5,0.5,0.5,0.5,0.53,0.6,0.65,0.75,0.85,0.98,1,0.97,0.9,
+                    0.94,0.97,1,1,0.85,0.73,0.6,0.55,0.5,0.5,0.5]
+    wknd_scaler = [0.5,0.5,0.5,0.5,0.5,0.5,0.5,0.5,0.5,0.5,0.5,0.5,0.5,0.5,0.5,0.5,0.5,0.5,0.5,0.5,0.5,0.5,0.5,0.5]
+    matched = False
+    for i in range(4):
+        if int(str(naics_code)[:(6-i)]) in mecs_db.index.to_list():
+            mio_kwh = float(mecs_db.at[int(str(naics_code)[:(6-i)]), "USA (Mio kWh)"])
+            mio_sqft = float(mecs_db.at[int(str(naics_code)[:(6-i)]), "USA (Mio SQFT)"])
+            if (mio_kwh < 0) or (mio_sqft < 0):
+                print("NAICS Code not supported yet. MECS data not good enough")
+                raise ValueError
+            kwh_per_sqft = mio_kwh/mio_sqft
+            matched = True
+    if not matched:
+        print("NAICS Code not supported yet.")
+        raise ValueError
+    hours_at_peak_if_flat = sum(wkdy_scaler)*(52*5+1)+sum(wknd_scaler)*(52*2)
+    peak_kw = kwh_per_sqft/hours_at_peak_if_flat * floor_area
+    base_profile["Electricity kW"] = base_profile["Electricity kW"]*peak_kw
+    heat_cool_profile["Electricity kW"] = base_profile["Electricity kW"].to_list()
+    return heat_cool_profile
+
+
 def load_doe_bldg_dict():
     doe_bldg_dict = {  # First element area, second element number of floors
         "Large Office": [498588, 12],
@@ -42,8 +72,24 @@ def get_load_profile(station, eia_occupancy_type, vint, area, folders, repr_weat
     return scaled_profile
 
 
-def naics_to_eia_type_map(naics_type, sqft):
-    db = pd.read_csv("naics_to_eia_type_map.csv", index_col=0)
+def get_cond_load_profile(station, eia_occupancy_type, vint, area, folders, repr_weather_station):
+    reference_sqft = load_doe_bldg_dict()[eia_occupancy_type][0]
+    profile_scaling_factor = area / reference_sqft
+    folder_name = station + "/"
+    file_name = "RefBldg"+eia_occupancy_type.replace(" ", "").replace("-", "") + vint + \
+                "_v1.3_7.1_" + repr_weather_station + ".csv"
+    ref_profile = pd.read_csv(folders["load_profiles"]+folder_name+file_name, index_col=0)
+    scaled_profile = pd.DataFrame()
+    scaled_profile["Elec Heating kW"] = ref_profile["Heating:Electricity [kW](Hourly)"]*profile_scaling_factor
+    scaled_profile["Gas Heating kW"] = ref_profile["Heating:Gas [kW](Hourly)"]*profile_scaling_factor
+    scaled_profile["Cooling kW"] = ref_profile["Cooling:Electricity [kW](Hourly)"]*profile_scaling_factor
+    scaled_profile["Unprocessed Date"] = scaled_profile.index.to_list()
+    scaled_profile[["Date", "Time"]] = scaled_profile["Unprocessed Date"].str.split("  ", expand=True)
+    return scaled_profile
+
+
+def naics_to_eia_type_map(naics_type, sqft, db):
+    naics_type = int(str(naics_type)[:2])
     sqft_separator = {
         "Office": {"Small Office": [0, 10000],
                    "Medium Office": [10000, 100000],
@@ -106,8 +152,8 @@ def load_epw_dict():
 
 
 def get_weather_station_from_zip(building_zip):
-    zip_to_station = pd.read_csv("Zip to Weather Station by Triangulation.csv", index_col=0)
-    zip_to_climate_zone = pd.read_csv("zip_to_climate_zone.csv", index_col=0)
+    zip_to_station = pd.read_csv(folders["data"]+"Zip to Weather Station by Triangulation.csv", index_col=0)
+    zip_to_climate_zone = pd.read_csv(folders["data"]+"zip_to_climate_zone.csv", index_col=0)
     station = zip_to_station.at[int(building_zip), "Station"]
     cz = str(zip_to_climate_zone.at[int(building_zip), "number"])+zip_to_climate_zone.at[int(building_zip), "letter"]
     cz_epw = load_epw_dict()[cz]
@@ -131,9 +177,13 @@ def parse_arguments():
     return arguments
 
 
-def visualize_profile(df, vis_bool, folders):
+def visualize_profile(df, vis_bool, folders, mode):
     fig = go.Figure()
-    for variable in ["Electricity kW", "Natural Gas kW"]:
+    if mode == "DoE":
+        varlist = ["Electricity kW", "Natural Gas kW"]
+    if mode == "MECS":
+        varlist = ["Electricity kW"]
+    for variable in varlist:
         fig.add_trace(
             go.Scatter(visible=True, line=dict(width=3), name=variable, x=df.index.to_list(), y=df[variable].to_list()))
     fig.update_layout(
@@ -145,25 +195,41 @@ def visualize_profile(df, vis_bool, folders):
             family="Courier New, monospace",
             size=18,
         ))
-    with open(folders["base"] + "profile.html", "w") as f:
+    with open(folders["output"] + "profile.html", "w") as f:
         f.write(fig.to_html(full_html=False, include_plotlyjs='cdn'))
-    #if vis_bool:
-    #    filename = 'file:///' + os.getcwd() + '/' + folders["base"] + 'profile.html'
-    #    webbrowser.open_new_tab(filename)
     return "Successful"
 
 
 if __name__ == "__main__":
+    month = 3 #1,2,3,4,5,6,7,8,9,10,11,12,all
     folder = os.path.dirname(os.path.realpath(__file__)) + "/"
     folders = {
         "base": folder,
-        "lookup": folder + "useful_lookups/",
+        "data": folder + "data/",
+        "output": folder + "outputs/",
         "load_profiles": folder + "template_load_profiles/"
     }
     args = parse_arguments()
-    eia_type = naics_to_eia_type_map(args.type, args.sqft)
-    weather_station, repr_weather_station = get_weather_station_from_zip(args.zip)
-    vintage = get_vintage_from_year_built(args.year)
-    profile_df = get_load_profile(weather_station, eia_type, vintage, args.sqft, folders, repr_weather_station)
-    profile_df.drop(columns = ["Unprocessed Date", "Date", "Time"]).to_excel(folders["base"] + "load_profile_out.xlsx")
-    print(visualize_profile(profile_df, args.vis, folders))
+    naics_to_eia = pd.read_csv(folders["data"]+"naics_to_eia_type_map.csv", index_col=0)
+    if int(str(args.type)[:2]) in naics_to_eia.index.to_list():
+        eia_type = naics_to_eia_type_map(args.type, args.sqft, naics_to_eia)
+        weather_station, repr_weather_station = get_weather_station_from_zip(args.zip)
+        vintage = get_vintage_from_year_built(args.year)
+        profile_df = get_load_profile(weather_station, eia_type, vintage, args.sqft, folders, repr_weather_station)
+        profile_df = profile_df.drop(columns = ["Unprocessed Date", "Date", "Time"])
+        mode = "DoE"
+    elif str(args.type)[0] == "3":
+        eia_type = "Warehouse"
+        weather_station, repr_weather_station = get_weather_station_from_zip(args.zip)
+        vintage = get_vintage_from_year_built(args.year)
+        heat_and_cool_profile_df = get_cond_load_profile(weather_station, eia_type, vintage, args.sqft, folders, repr_weather_station)
+        profile_df = make_process_dominated_load_profile(args.type, args.sqft, heat_and_cool_profile_df, folders)
+        mode = "MECS"
+    else:
+        profile_df = pd.DataFrame()
+        print("NAICS code note yet supported.")
+        raise ValueError
+    profile_df.to_excel(folders["output"] + "load_profile_out.xlsx")
+    if str(month) != "all":
+        profile_df = profile_df.iloc[int(round(month*30.5*24, 0)):int(round(month*30.5*24+7*24, 0))]
+    print(visualize_profile(profile_df, args.vis, folders, mode))
