@@ -57,18 +57,28 @@ def load_doe_bldg_dict():
     return doe_bldg_dict
 
 
-def get_load_profile(station, eia_occupancy_type, vint, area, folders, repr_weather_station):
-    reference_sqft = load_doe_bldg_dict()[eia_occupancy_type][0]
-    profile_scaling_factor = area / reference_sqft
-    folder_name = station + "/"
-    file_name = "RefBldg"+eia_occupancy_type.replace(" ", "").replace("-", "") + vint + \
-                "_v1.3_7.1_" + repr_weather_station + ".csv"
-    ref_profile = pd.read_csv(folders["load_profiles"]+folder_name+file_name, index_col=0)
-    scaled_profile = pd.DataFrame()
-    scaled_profile["Electricity kW"] = ref_profile["Electricity:Facility [kW](Hourly)"]*profile_scaling_factor
-    scaled_profile["Natural Gas kW"] = ref_profile["Gas:Facility [kW](Hourly)"]*profile_scaling_factor
-    scaled_profile["Unprocessed Date"] = scaled_profile.index.to_list()
-    scaled_profile[["Date", "Time"]] = scaled_profile["Unprocessed Date"].str.split("  ", expand=True)
+def get_load_profile(station, occupancy_type, vint, area, folders, repr_weather_station, type = "OEDI"):
+    if type == "OEDI":
+        reference_sqft = load_doe_bldg_dict()[occupancy_type][0]
+        profile_scaling_factor = area / reference_sqft
+        folder_name = station + "/"
+        file_name = "RefBldg"+occupancy_type.replace(" ", "").replace("-", "") + vint + \
+                    "_v1.3_7.1_" + repr_weather_station + ".csv"
+        ref_profile = pd.read_csv(folders["load_profiles"]+folder_name+file_name, index_col=0)
+        scaled_profile = pd.DataFrame()
+        scaled_profile["Electricity kW"] = ref_profile["Electricity:Facility [kW](Hourly)"]*profile_scaling_factor
+        scaled_profile["Natural Gas kW"] = ref_profile["Gas:Facility [kW](Hourly)"]*profile_scaling_factor
+        scaled_profile["Unprocessed Date"] = scaled_profile.index.to_list()
+        scaled_profile[["Date", "Time"]] = scaled_profile["Unprocessed Date"].str.split("  ", expand=True)
+    else:
+        profile_scaling_factor = 1
+        file_name = "Mendeley Data/"+occupancy_type.replace(" ", "")+".csv"
+        ref_profile = pd.read_csv(folders["load_profiles"]+"Mendeley Data"+file_name)
+        scaled_profile = pd.read_csv(folders["data"]+"base_profile.csv", index_col=0)
+        scaled_profile["Electricity kW"] = ref_profile["Power [kW]"].to_list()
+        scaled_profile["Unprocessed Date"] = scaled_profile.index.to_list()
+        scaled_profile[["Date", "Time"]] = scaled_profile["Unprocessed Date"].str.split("  ", expand=True)
+        scaled_profile = 0
     return scaled_profile
 
 
@@ -159,29 +169,13 @@ def get_weather_station_from_zip(building_zip):
     cz_epw = load_epw_dict()[cz]
     return station, cz_epw[:-4]
 
-
-def parse_arguments():
-    # Create argument parser
-    parser = argparse.ArgumentParser()
-    # Optional arguments
-    parser.add_argument("-z", "--zip", help="Zip Code of the building as an integer", type=int, default=80016)
-    parser.add_argument("-t", "--type", help="First 2 digits of the building type code following NAICS schema",
-                        type=str, default="61")
-    parser.add_argument("-y", "--year", help="Year the building was constructed", type=int, default=2000)
-    parser.add_argument("-s", "--sqft", help="Net building square footage", type=float, default=20000)
-    parser.add_argument("-v", "--vis", help="Open visualization or not", type=bool, default=True)
-    # Print version
-    parser.add_argument("--version", action="version", version='Version 1.0')
-    # Parse arguments
-    arguments = parser.parse_args()
-    return arguments
-
-
 def visualize_profile(df, vis_bool, folders, mode):
     fig = go.Figure()
-    if mode == "DoE":
+    if "DoE" in mode:
         varlist = ["Electricity kW", "Natural Gas kW"]
-    if mode == "MECS":
+    elif "MECS" in mode:
+        varlist = ["Electricity kW"]
+    elif "Manual" in mode:
         varlist = ["Electricity kW"]
     for variable in varlist:
         fig.add_trace(
@@ -197,34 +191,77 @@ def visualize_profile(df, vis_bool, folders, mode):
         ))
     with open(folders["output"] + "profile.html", "w") as f:
         f.write(fig.to_html(full_html=False, include_plotlyjs='cdn'))
-    return "Successful"
+    return "Successful. Building profile completed using the method: " + mode
+
+def get_oeid_profile_wrapper(args, folders, naics_to_eia):
+    eia_type = naics_to_eia_type_map(args.type, args.sqft, naics_to_eia)
+    weather_station, repr_weather_station = get_weather_station_from_zip(args.zip)
+    vintage = get_vintage_from_year_built(args.year)
+    profile_df = get_load_profile(weather_station, eia_type, vintage, args.sqft, folders, repr_weather_station)
+    profile_df = profile_df.drop(columns = ["Unprocessed Date", "Date", "Time"])
+    return profile_df
+
+def get_mendeley_profile_wrapper(args, folders, mendeley_type):
+    profile_df = get_load_profile("", mendeley_type, "", args.sqft, folders, "", type = "Mendeley")
+    return profile_df
+
+def get_mecs_profile_wrapper(args, folders):
+    eia_type = "Warehouse"
+    weather_station, repr_weather_station = get_weather_station_from_zip(args.zip)
+    vintage = get_vintage_from_year_built(args.year)
+    heat_and_cool_profile_df = get_cond_load_profile(weather_station, eia_type, vintage, args.sqft, folders, repr_weather_station)
+    profile_df = make_process_dominated_load_profile(args.type, args.sqft, heat_and_cool_profile_df, folders)
+    return profile_df
+
+
+def matts_maps_wrapper(args, folders, matts_maps, naics_to_eia):
+    mapped_type = matts_maps[matts_maps["NAICS Code"] == int(args.type)].iloc[0].loc["Based on Criteria Established on 2-15-22"]
+    if mapped_type in list(load_doe_bldg_dict().keys()):
+        return get_oeid_profile_wrapper(args, folders, naics_to_eia)
+    else:
+        return get_mendeley_profile_wrapper(args, folders, mapped_type)
+    
+
+def parse_arguments():
+    # Create argument parser
+    parser = argparse.ArgumentParser()
+    # Optional arguments
+    parser.add_argument("-z", "--zip", help="Zip Code of the building as an integer", type=int, default=80016)
+    parser.add_argument("-t", "--type", help="Building type code following NAICS schema",
+                        type=str, default="61")
+    parser.add_argument("-y", "--year", help="Year the building was constructed", type=int, default=2000)
+    parser.add_argument("-s", "--sqft", help="Net building square footage", type=float, default=20000)
+    parser.add_argument("-v", "--vis", help="Open visualization or not", type=bool, default=True)
+    # Print version
+    parser.add_argument("--version", action="version", version='Version 1.0')
+    # Parse arguments
+    arguments = parser.parse_args()
+    return arguments
 
 
 if __name__ == "__main__":
-    month = 3 #1,2,3,4,5,6,7,8,9,10,11,12,all
+    month = "all" #1,2,3,4,5,6,7,8,9,10,11,12,all
     folder = os.path.dirname(os.path.realpath(__file__)) + "/"
     folders = {
         "base": folder,
         "data": folder + "data/",
         "output": folder + "outputs/",
-        "load_profiles": folder + "template_load_profiles/"
+        "load_profiles": folder + "highlevel_template_load_profiles/"
     }
-    args = parse_arguments()
     naics_to_eia = pd.read_csv(folders["data"]+"naics_to_eia_type_map.csv", index_col=0)
-    if int(str(args.type)[:2]) in naics_to_eia.index.to_list():
-        eia_type = naics_to_eia_type_map(args.type, args.sqft, naics_to_eia)
-        weather_station, repr_weather_station = get_weather_station_from_zip(args.zip)
-        vintage = get_vintage_from_year_built(args.year)
-        profile_df = get_load_profile(weather_station, eia_type, vintage, args.sqft, folders, repr_weather_station)
-        profile_df = profile_df.drop(columns = ["Unprocessed Date", "Date", "Time"])
-        mode = "DoE"
+    args = parse_arguments()
+    matts_maps = pd.read_csv(folders["data"]+"matts_maps.csv")
+    if ((matts_maps["NAICS Code"] == int(args.type)) & (
+        matts_maps["Based on Criteria Established on 2-15-22"] != "NONE APPLICABLE") & (
+            matts_maps["Based on Criteria Established on 2-15-22"].astype(str) != "nan")).any():
+        profile_df = matts_maps_wrapper(args, folders, matts_maps, naics_to_eia)
+        mode = "Manual Map"
+    elif int(str(args.type)[:2]) in naics_to_eia.index.to_list():
+        profile_df = get_oeid_profile_wrapper(args, folders, naics_to_eia)
+        mode = "DoE Map"
     elif str(args.type)[0] == "3":
-        eia_type = "Warehouse"
-        weather_station, repr_weather_station = get_weather_station_from_zip(args.zip)
-        vintage = get_vintage_from_year_built(args.year)
-        heat_and_cool_profile_df = get_cond_load_profile(weather_station, eia_type, vintage, args.sqft, folders, repr_weather_station)
-        profile_df = make_process_dominated_load_profile(args.type, args.sqft, heat_and_cool_profile_df, folders)
-        mode = "MECS"
+        profile_df = get_mecs_profile_wrapper(args, folders)
+        mode = "MECS Approximation"
     else:
         profile_df = pd.DataFrame()
         print("NAICS code note yet supported.")
