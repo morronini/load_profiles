@@ -3,8 +3,8 @@ import os
 import argparse
 import plotly.graph_objects as go
 import webbrowser
-
-
+import datetime
+import json
 
 
 
@@ -231,12 +231,48 @@ def parse_arguments():
                         type=str, default="61")
     parser.add_argument("-y", "--year", help="Year the building was constructed", type=int, default=2000)
     parser.add_argument("-s", "--sqft", help="Net building square footage", type=float, default=20000)
-    parser.add_argument("-v", "--vis", help="Open visualization or not", type=bool, default=True)
+    parser.add_argument("-v", "--vis", help="Open visualization, False for json output", type=bool, default=False)
     # Print version
     parser.add_argument("--version", action="version", version='Version 1.0')
     # Parse arguments
     arguments = parser.parse_args()
     return arguments
+
+
+def profile_to_json(df, folders, mode, timeframes=4):
+    graph_timeframes = {
+        "Month": 3,
+        "Week": 1, #not used
+        "Day": 1 #not used
+    }
+    profile_dict = {
+        "Method": mode,
+        "Timestamp": datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+    }
+    df["Date/Time Old"] = df.index.to_list()
+    df[["Month/Day", "Hour:Minute:Second"]] = df["Date/Time Old"].str.split("  ", expand = True)
+    df["Month/Day"] = df["Month/Day"].str.replace(" ", "")
+    df[["Month", "Day"]] = df["Month/Day"].str.split("/", expand=True).astype(int)
+    df[["Hour", "Minute", "Second"]] = df["Hour:Minute:Second"].str.split(":", expand=True).astype(int)
+    df["Date/Time New"] = ['/'.join(i) for i in zip(df['Month'].astype(str), df['Day'].astype(str))]
+    df["Date/Time New"] = [' '.join(i) for i in zip(df['Date/Time New'], df['Hour'].astype(str))]
+    df["Date/Time New"] = df["Date/Time New"] + ":00"
+    df.set_index("Date/Time New", inplace = True)
+    df = df.drop(columns = ["Second", "Month/Day", "Hour:Minute:Second"])
+    profile_dict["Yearly Power Consumption (kW)"] = dict(zip(df.index.to_list(), df["Electricity kW"].to_list()))
+    monthly_df = df[df["Month"] == graph_timeframes["Month"]]
+    profile_dict["Monthly Power Consumption (kW)"] = dict(zip(monthly_df.index.to_list(), monthly_df["Electricity kW"].to_list()))
+    weekly_df = monthly_df.iloc[(0):(7*24)]
+    profile_dict["Weekly Power Consumption (kW)"] = dict(zip(weekly_df.index.to_list(), weekly_df["Electricity kW"].to_list()))
+    daily_df = weekly_df.iloc[(0):(24)]
+    daily_df["New Index"] = daily_df.index.to_list()
+    daily_df[["Waste", "Time"]] = daily_df["New Index"].str.split(" ", expand = True)
+    daily_df.set_index("Time", inplace = True)
+    profile_dict["Daily Power Consumption (kW)"] = dict(zip(daily_df.index.to_list(), daily_df["Electricity kW"].to_list()))
+    profile_json = json.dumps(profile_dict, indent=4)
+    with open(folders["output"]+'out.json', 'w') as outfile:
+        outfile.write(profile_json)
+    return profile_json
 
 
 if __name__ == "__main__":
@@ -266,7 +302,10 @@ if __name__ == "__main__":
         profile_df = pd.DataFrame()
         print("NAICS code note yet supported.")
         raise ValueError
-    profile_df.to_excel(folders["output"] + "load_profile_out.xlsx")
-    if str(month) != "all":
-        profile_df = profile_df.iloc[int(round(month*30.5*24, 0)):int(round(month*30.5*24+7*24, 0))]
-    print(visualize_profile(profile_df, args.vis, folders, mode))
+    if args.vis:
+        profile_df.to_excel(folders["output"] + "load_profile_out.xlsx")
+        if str(month) != "all":
+            profile_df = profile_df.iloc[int(round(month*30.5*24, 0)):int(round(month*30.5*24+7*24, 0))]
+        print(visualize_profile(profile_df, args.vis, folders, mode))
+    else:
+        profile_to_json(profile_df, folders, mode, timeframes=4)
