@@ -169,19 +169,26 @@ def get_weather_station_from_zip(building_zip):
     cz_epw = load_epw_dict()[cz]
     return station, cz_epw[:-4]
 
-def visualize_profile(df, vis_bool, folders, mode):
+def visualize_profile(df, folders, mode):
+    # mode is "DoE", "MECS", or "Manual"
+    number_of_hours_in_df = len(df.index.to_list())
+    if number_of_hours_in_df > 300*24:
+        timespan = "Year"
+    elif number_of_hours_in_df > 70*24:
+        timespan = "Season"
+    elif number_of_hours_in_df > 20*24:
+        timespan = "Month"
+    elif number_of_hours_in_df > 5*24:
+        timespan = "Week"
+    else:
+        timespan = "Day"
     fig = go.Figure()
-    if "DoE" in mode:
-        varlist = ["Electricity kW", "Natural Gas kW"]
-    elif "MECS" in mode:
-        varlist = ["Electricity kW"]
-    elif "Manual" in mode:
-        varlist = ["Electricity kW"]
+  
+    varlist = ["Electricity kW"]
     for variable in varlist:
-        fig.add_trace(
-            go.Scatter(visible=True, line=dict(width=3), name=variable, x=df.index.to_list(), y=df[variable].to_list()))
+        fig.add_trace(go.Scatter(visible=True, line=dict(width=3), name=variable, x=df["Step"].to_list(), y=df[variable].to_list()))
     fig.update_layout(
-        title="Yearly Load Profile",
+        title=f"Electric Load Profile ({timespan})",
         xaxis_title="Time (hours)",
         yaxis_title="Load (kW)",
         xaxis=dict(tickmode="array"),
@@ -189,9 +196,8 @@ def visualize_profile(df, vis_bool, folders, mode):
             family="Courier New, monospace",
             size=18,
         ))
-    with open(folders["output"] + "profile.html", "w") as f:
+    with open(folders["output"] + f"profile_{timespan}.html", "w") as f:
         f.write(fig.to_html(full_html=False, include_plotlyjs='cdn'))
-    return "Successful. Building profile completed using the method: " + mode
 
 def get_oeid_profile_wrapper(args, folders, naics_to_eia):
     eia_type = naics_to_eia_type_map(args.type, args.sqft, naics_to_eia)
@@ -275,6 +281,41 @@ def profile_to_json(df, folders, mode, timeframes=4):
     return profile_json
 
 
+def slice_datetime_df(df, timespan):
+    #Timespan is one of ["Year", "Month", "Week", "Day"]
+    graph_timeframes = {
+        "Month": 3,
+        "Week": 1, #not used
+        "Day": 1 #not used
+    }
+    df["Date/Time Old"] = df.index.to_list()
+    df[["Month/Day", "Hour:Minute:Second"]] = df["Date/Time Old"].str.split("  ", expand = True)
+    df["Month/Day"] = df["Month/Day"].str.replace(" ", "")
+    df[["Month", "Day"]] = df["Month/Day"].str.split("/", expand=True).astype(int)
+    df[["Hour", "Minute", "Second"]] = df["Hour:Minute:Second"].str.split(":", expand=True).astype(int)
+    for row in df.index.to_list():
+        df.at[row, "Step"] = datetime.datetime(year=2022, month=df.at[row, "Month"], day=df.at[row, "Day"], hour=df.at[row, "Hour"]-1, minute=df.at[row, "Minute"])
+    df["Date/Time New"] = ['/'.join(i) for i in zip(df['Month'].astype(str), df['Day'].astype(str))]
+    df["Date/Time New"] = [' '.join(i) for i in zip(df['Date/Time New'], df['Hour'].astype(str))]
+    df["Date/Time New"] = df["Date/Time New"] + ":00"
+    df.set_index("Date/Time New", inplace = True)
+    df = df.drop(columns = ["Second", "Month/Day", "Hour:Minute:Second"])
+    if timespan == "Year":
+        return df
+    monthly_df = df[df["Month"] == graph_timeframes["Month"]]
+    if timespan == "Month":
+        return monthly_df
+    weekly_df = monthly_df.iloc[(0):(7*24)]
+    if timespan == "Week":
+        return weekly_df
+    daily_df = weekly_df.iloc[(0):(24)]
+    daily_df["New Index"] = daily_df.index.to_list()
+    daily_df[["Waste", "Time"]] = daily_df["New Index"].str.split(" ", expand = True)
+    daily_df.set_index("Time", inplace = True)
+    if timespan == "Day":
+        return daily_df
+
+
 if __name__ == "__main__":
     month = "all" #1,2,3,4,5,6,7,8,9,10,11,12,all
     folder = os.path.dirname(os.path.realpath(__file__)) + "/"
@@ -306,6 +347,7 @@ if __name__ == "__main__":
         profile_df.to_excel(folders["output"] + "load_profile_out.xlsx")
         if str(month) != "all":
             profile_df = profile_df.iloc[int(round(month*30.5*24, 0)):int(round(month*30.5*24+7*24, 0))]
-        print(visualize_profile(profile_df, args.vis, folders, mode))
+        for timespan in ["Year", "Month", "Week", "Day"]:
+            visualize_profile(slice_datetime_df(profile_df.copy(), timespan), folders, mode)
     else:
         profile_to_json(profile_df, folders, mode, timeframes=4)
