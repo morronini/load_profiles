@@ -12,4 +12,4 @@ Steps to get this running:
 	Note: sqft or peak must be passed as an argument. If both are passed, peak will be used instead of sqft.
 Example 1: "python main.py --zip 80016 --type 61 --sqft 20000"
 Example 2: "python main.py --zip 80220 --type 321 --peak 150"
-4. Profile will be output as an html visualization and a xlsx to view
+4. Profile will be output as 4 html visualizations, a json with 4 timeperiods, and an excel spreadsheet
