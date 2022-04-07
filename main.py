@@ -8,10 +8,12 @@ import json
 
 
 
-def make_process_dominated_load_profile(naics_code, floor_area, heat_cool_profile, folders):
+def make_process_dominated_load_profile(naics_code, floor_area, folders):
+    if floor_area == -1:
+        floor_area = 2000 #This is overridden later
     # https://info.ornl.gov/sites/publications/files/pub45942.pdf for the daily profile
     mecs_db = pd.read_csv(folders["data"]+"mecs_lookup.csv", index_col=0)
-    base_profile = pd.read_csv(folders["data"]+"base_manu_profile.csv")
+    base_profile = pd.read_csv(folders["data"]+"base_manu_profile.csv", index_col=0)
     wkdy_scaler = [0.5,0.5,0.5,0.5,0.53,0.6,0.65,0.75,0.85,0.98,1,0.97,0.9,
                     0.94,0.97,1,1,0.85,0.73,0.6,0.55,0.5,0.5,0.5]
     wknd_scaler = [0.5,0.5,0.5,0.5,0.5,0.5,0.5,0.5,0.5,0.5,0.5,0.5,0.5,0.5,0.5,0.5,0.5,0.5,0.5,0.5,0.5,0.5,0.5,0.5]
@@ -31,8 +33,7 @@ def make_process_dominated_load_profile(naics_code, floor_area, heat_cool_profil
     hours_at_peak_if_flat = sum(wkdy_scaler)*(52*5+1)+sum(wknd_scaler)*(52*2)
     peak_kw = kwh_per_sqft/hours_at_peak_if_flat * floor_area
     base_profile["Electricity kW"] = base_profile["Electricity kW"]*peak_kw
-    heat_cool_profile["Electricity kW"] = base_profile["Electricity kW"].to_list()
-    return heat_cool_profile
+    return base_profile
 
 
 def load_doe_bldg_dict():
@@ -60,14 +61,16 @@ def load_doe_bldg_dict():
 def get_load_profile(station, occupancy_type, vint, area, folders, repr_weather_station, type = "OEDI"):
     if type == "OEDI":
         reference_sqft = load_doe_bldg_dict()[occupancy_type][0]
-        profile_scaling_factor = area / reference_sqft
+        if area == -1:
+            profile_scaling_factor = 1
+        else:
+            profile_scaling_factor = area / reference_sqft
         folder_name = station + "/"
         file_name = "RefBldg"+occupancy_type.replace(" ", "").replace("-", "") + vint + \
                     "_v1.3_7.1_" + repr_weather_station + ".csv"
         ref_profile = pd.read_csv(folders["load_profiles"]+folder_name+file_name, index_col=0)
         scaled_profile = pd.DataFrame()
         scaled_profile["Electricity kW"] = ref_profile["Electricity:Facility [kW](Hourly)"]*profile_scaling_factor
-        scaled_profile["Natural Gas kW"] = ref_profile["Gas:Facility [kW](Hourly)"]*profile_scaling_factor
         scaled_profile["Unprocessed Date"] = scaled_profile.index.to_list()
         scaled_profile[["Date", "Time"]] = scaled_profile["Unprocessed Date"].str.split("  ", expand=True)
     else:
@@ -83,16 +86,7 @@ def get_load_profile(station, occupancy_type, vint, area, folders, repr_weather_
 
 
 def get_cond_load_profile(station, eia_occupancy_type, vint, area, folders, repr_weather_station):
-    reference_sqft = load_doe_bldg_dict()[eia_occupancy_type][0]
-    profile_scaling_factor = area / reference_sqft
-    folder_name = station + "/"
-    file_name = "RefBldg"+eia_occupancy_type.replace(" ", "").replace("-", "") + vint + \
-                "_v1.3_7.1_" + repr_weather_station + ".csv"
-    ref_profile = pd.read_csv(folders["load_profiles"]+folder_name+file_name, index_col=0)
     scaled_profile = pd.DataFrame()
-    scaled_profile["Elec Heating kW"] = ref_profile["Heating:Electricity [kW](Hourly)"]*profile_scaling_factor
-    scaled_profile["Gas Heating kW"] = ref_profile["Heating:Gas [kW](Hourly)"]*profile_scaling_factor
-    scaled_profile["Cooling kW"] = ref_profile["Cooling:Electricity [kW](Hourly)"]*profile_scaling_factor
     scaled_profile["Unprocessed Date"] = scaled_profile.index.to_list()
     scaled_profile[["Date", "Time"]] = scaled_profile["Unprocessed Date"].str.split("  ", expand=True)
     return scaled_profile
@@ -116,14 +110,18 @@ def naics_to_eia_type_map(naics_type, sqft, db):
     try:
         type_unprocessed = db.at[int(naics_type), "EIA"]
         if db.at[int(naics_type), "Post-process with SQFT"]:
-            for eia in list(sqft_separator[type_unprocessed].keys()):
-                if (sqft >= sqft_separator[type_unprocessed][eia][0]) & \
-                        (sqft < sqft_separator[type_unprocessed][eia][1]):
-                    type_processed = eia
-                    break
+            if sqft == -1:
+                return list(sqft_separator[type_unprocessed].keys())[0]
+            else:
+                for eia in list(sqft_separator[type_unprocessed].keys()):
+                    if (sqft >= sqft_separator[type_unprocessed][eia][0]) & \
+                            (sqft < sqft_separator[type_unprocessed][eia][1]):
+                        type_processed = eia
+                        break
+                return type_processed
         else:
-            type_processed = type_unprocessed
-        return type_processed
+            return type_unprocessed
+        
     except KeyError:
         return "This NAICS Type Currently Not Supported"
 
@@ -199,8 +197,11 @@ def visualize_profile(df, folders, mode):
     with open(folders["output"] + f"profile_{timespan}.html", "w") as f:
         f.write(fig.to_html(full_html=False, include_plotlyjs='cdn'))
 
-def get_oeid_profile_wrapper(args, folders, naics_to_eia):
-    eia_type = naics_to_eia_type_map(args.type, args.sqft, naics_to_eia)
+def get_oeid_profile_wrapper(args, folders, naics_to_eia, specific = False, specific_type = ""):
+    if specific:
+        eia_type = specific_type
+    else:
+        eia_type = naics_to_eia_type_map(args.type, args.sqft, naics_to_eia)
     weather_station, repr_weather_station = get_weather_station_from_zip(args.zip)
     vintage = get_vintage_from_year_built(args.year)
     profile_df = get_load_profile(weather_station, eia_type, vintage, args.sqft, folders, repr_weather_station)
@@ -212,18 +213,14 @@ def get_mendeley_profile_wrapper(args, folders, mendeley_type):
     return profile_df
 
 def get_mecs_profile_wrapper(args, folders):
-    eia_type = "Warehouse"
-    weather_station, repr_weather_station = get_weather_station_from_zip(args.zip)
-    vintage = get_vintage_from_year_built(args.year)
-    heat_and_cool_profile_df = get_cond_load_profile(weather_station, eia_type, vintage, args.sqft, folders, repr_weather_station)
-    profile_df = make_process_dominated_load_profile(args.type, args.sqft, heat_and_cool_profile_df, folders)
+    profile_df = make_process_dominated_load_profile(args.type, args.sqft, folders)
     return profile_df
 
 
 def matts_maps_wrapper(args, folders, matts_maps, naics_to_eia):
     mapped_type = matts_maps[matts_maps["NAICS Code"] == int(args.type)].iloc[0].loc["Based on Criteria Established on 2-15-22"]
     if mapped_type in list(load_doe_bldg_dict().keys()):
-        return get_oeid_profile_wrapper(args, folders, naics_to_eia)
+        return get_oeid_profile_wrapper(args, folders, naics_to_eia, specific = True, specific_type = mapped_type)
     else:
         return get_mendeley_profile_wrapper(args, folders, mapped_type)
     
@@ -236,8 +233,9 @@ def parse_arguments():
     parser.add_argument("-t", "--type", help="Building type code following NAICS schema",
                         type=str, default="61")
     parser.add_argument("-y", "--year", help="Year the building was constructed", type=int, default=2000)
-    parser.add_argument("-s", "--sqft", help="Net building square footage", type=float, default=20000)
-    parser.add_argument("-v", "--vis", help="Open visualization, False for json output", type=bool, default=False)
+    parser.add_argument("-s", "--sqft", help="Net building square footage", type=float, default=-1)
+    parser.add_argument("-v", "--vis", help="Open visualization, False for json output", type=bool, default=True)
+    parser.add_argument("-p", "--peak", help="Float peak electricity draw (kW)", type=float, default=-1)
     # Print version
     parser.add_argument("--version", action="version", version='Version 1.0')
     # Parse arguments
@@ -308,9 +306,8 @@ def slice_datetime_df(df, timespan):
     weekly_df = monthly_df.iloc[(0):(7*24)]
     if timespan == "Week":
         return weekly_df
-    daily_df = weekly_df.iloc[(0):(24)]
-    daily_df["New Index"] = daily_df.index.to_list()
-    daily_df[["Waste", "Time"]] = daily_df["New Index"].str.split(" ", expand = True)
+    daily_df = weekly_df.iloc[(0):(24)].reset_index()
+    daily_df[["Waste", "Time"]] = daily_df["Date/Time New"].str.split(" ", expand = True)
     daily_df.set_index("Time", inplace = True)
     if timespan == "Day":
         return daily_df
@@ -328,6 +325,9 @@ if __name__ == "__main__":
     naics_to_eia = pd.read_csv(folders["data"]+"naics_to_eia_type_map.csv", index_col=0)
     args = parse_arguments()
     matts_maps = pd.read_csv(folders["data"]+"matts_maps.csv")
+    if (args.sqft == -1) & (args.peak == -1):
+        print("EIther SQFT or Peak kW must be specified.")
+        raise ValueError
     if ((matts_maps["NAICS Code"] == int(args.type)) & (
         matts_maps["Based on Criteria Established on 2-15-22"] != "NONE APPLICABLE") & (
             matts_maps["Based on Criteria Established on 2-15-22"].astype(str) != "nan")).any():
@@ -343,6 +343,10 @@ if __name__ == "__main__":
         profile_df = pd.DataFrame()
         print("NAICS code note yet supported.")
         raise ValueError
+    if args.peak != -1:
+        attained_peak = profile_df["Electricity kW"].max()
+        scaler = args.peak / attained_peak 
+        profile_df["Electricity kW"] = profile_df["Electricity kW"]*scaler
     if args.vis:
         profile_df.to_excel(folders["output"] + "load_profile_out.xlsx")
         if str(month) != "all":
